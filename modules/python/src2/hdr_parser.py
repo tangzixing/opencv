@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 from __future__ import print_function
-import os, sys, re, string
+import os, sys, re, string, io
 
 # the list only for debugging. The real list, used in the real OpenCV build, is specified in CMakeLists.txt
 opencv_hdr_list = [
@@ -445,6 +445,12 @@ class CppHeaderParser(object):
 
         rettype, funcname, modlist, argno = self.parse_arg(decl_start, -1)
 
+        # determine original return type, hack for return types with underscore
+        original_type = None
+        i = decl_start.rfind(funcname)
+        if i > 0:
+            original_type = decl_start[:i].replace("&", "").replace("const", "").strip()
+
         if argno >= 0:
             classname = top[1]
             if rettype == classname or rettype == "~" + classname:
@@ -560,7 +566,10 @@ class CppHeaderParser(object):
         if static_method:
             func_modlist.append("/S")
 
-        return [funcname, rettype, func_modlist, args]
+        if original_type is None:
+            return [funcname, rettype, func_modlist, args]
+        else:
+            return [funcname, rettype, func_modlist, args, original_type]
 
     def get_dotted_name(self, name):
         """
@@ -734,7 +743,7 @@ class CppHeaderParser(object):
         """
         self.hname = hname
         decls = []
-        f = open(hname, "rt")
+        f = io.open(hname, 'rt', encoding='utf-8')
         linelist = list(f.readlines())
         f.close()
 

@@ -11,6 +11,8 @@
 #include "opencv2/cudacodec.hpp"
 #include "opencv2/highgui.hpp"
 
+#include "tick_meter.hpp"
+
 int main(int argc, const char* argv[])
 {
     if (argc != 2)
@@ -39,7 +41,7 @@ int main(int argc, const char* argv[])
 
     std::vector<double> cpu_times;
     std::vector<double> gpu_times;
-    cv::TickMeter tm;
+    TickMeter tm;
 
     for (int i = 1;; ++i)
     {
@@ -67,7 +69,8 @@ int main(int argc, const char* argv[])
         {
             std::cout << "Open CUDA Writer" << std::endl;
 
-            d_writer = cv::cudacodec::createVideoWriter("output_gpu.avi", frame.size(), FPS);
+            const cv::String outputFilename = "output_gpu.avi";
+            d_writer = cv::cudacodec::createVideoWriter(outputFilename, frame.size(), FPS);
         }
 
         d_frame.upload(frame);

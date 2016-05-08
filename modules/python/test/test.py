@@ -15,6 +15,7 @@ import operator
 import functools
 import numpy as np
 import cv2
+import argparse
 
 # Python 3 moved urlopen to urllib.requests
 try:
@@ -22,35 +23,15 @@ try:
 except ImportError:
     from urllib import urlopen
 
-class NewOpenCVTests(unittest.TestCase):
-
-    def get_sample(self, filename, iscolor = cv2.IMREAD_COLOR):
-        if not filename in self.image_cache:
-            filedata = urlopen("https://raw.github.com/Itseez/opencv/master/" + filename).read()
-            self.image_cache[filename] = cv2.imdecode(np.fromstring(filedata, dtype=np.uint8), iscolor)
-        return self.image_cache[filename]
-
-    def setUp(self):
-        self.image_cache = {}
-
-    def hashimg(self, im):
-        """ Compute a hash for an image, useful for image comparisons """
-        return hashlib.md5(im.tostring()).digest()
-
-    if sys.version_info[:2] == (2, 6):
-        def assertLess(self, a, b, msg=None):
-            if not a < b:
-                self.fail('%s not less than %s' % (repr(a), repr(b)))
-
-        def assertLessEqual(self, a, b, msg=None):
-            if not a <= b:
-                self.fail('%s not less than or equal to %s' % (repr(a), repr(b)))
-
-        def assertGreater(self, a, b, msg=None):
-            if not a > b:
-                self.fail('%s not greater than %s' % (repr(a), repr(b)))
+from tests_common import NewOpenCVTests
 
 # Tests to run first; check the handful of basic operations that the later tests rely on
+
+basedir = os.path.abspath(os.path.dirname(__file__))
+
+def load_tests(loader, tests, pattern):
+    tests.addTests(loader.discover(basedir, pattern='test_*.py'))
+    return tests
 
 class Hackathon244Tests(NewOpenCVTests):
 
@@ -92,7 +73,7 @@ class Hackathon244Tests(NewOpenCVTests):
 
     def test_fast(self):
         fd = cv2.FastFeatureDetector_create(30, True)
-        img = self.get_sample("samples/cpp/right02.jpg", 0)
+        img = self.get_sample("samples/data/right02.jpg", 0)
         img = cv2.medianBlur(img, 3)
         imgc = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
         keypoints = fd.detect(img)
@@ -132,7 +113,30 @@ class Hackathon244Tests(NewOpenCVTests):
         self.check_close_pairs(mc, mc0, 5)
         self.assertLessEqual(abs(mr - mr0), 5)
 
+    def test_inheritance(self):
+        bm = cv2.StereoBM_create()
+        bm.getPreFilterCap() # from StereoBM
+        bm.getBlockSize() # from SteroMatcher
+
+        boost = cv2.ml.Boost_create()
+        boost.getBoostType() # from ml::Boost
+        boost.getMaxDepth() # from ml::DTrees
+        boost.isClassifier() # from ml::StatModel
+
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='run OpenCV python tests')
+    parser.add_argument('--repo', help='use sample image files from local git repository (path to folder), '
+                                       'if not set, samples will be downloaded from github.com')
+    parser.add_argument('--data', help='<not used> use data files from local folder (path to folder), '
+                                        'if not set, data files will be downloaded from docs.opencv.org')
+    args, other = parser.parse_known_args()
     print("Testing OpenCV", cv2.__version__)
+    print("Local repo path:", args.repo)
+    NewOpenCVTests.repoPath = args.repo
+    try:
+        NewOpenCVTests.extraTestDataPath = os.environ['OPENCV_TEST_DATA_PATH']
+    except KeyError:
+        print('Missing opencv extra repository. Some of tests may fail.')
     random.seed(0)
-    unittest.main()
+    unit_argv = [sys.argv[0]] + other;
+    unittest.main(argv=unit_argv)

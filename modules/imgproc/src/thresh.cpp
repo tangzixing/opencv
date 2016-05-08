@@ -64,7 +64,7 @@ thresh_8u( const Mat& _src, Mat& _dst, uchar thresh, uchar maxval, int type )
     }
 
 #ifdef HAVE_TEGRA_OPTIMIZATION
-    if (tegra::thresh_8u(_src, _dst, roi.width, roi.height, thresh, maxval, type))
+    if (tegra::useTegra() && tegra::thresh_8u(_src, _dst, roi.width, roi.height, thresh, maxval, type))
         return;
 #endif
 
@@ -408,7 +408,7 @@ thresh_16s( const Mat& _src, Mat& _dst, short thresh, short maxval, int type )
     }
 
 #ifdef HAVE_TEGRA_OPTIMIZATION
-    if (tegra::thresh_16s(_src, _dst, roi.width, roi.height, thresh, maxval, type))
+    if (tegra::useTegra() && tegra::thresh_16s(_src, _dst, roi.width, roi.height, thresh, maxval, type))
         return;
 #endif
 
@@ -676,7 +676,7 @@ thresh_32f( const Mat& _src, Mat& _dst, float thresh, float maxval, int type )
     }
 
 #ifdef HAVE_TEGRA_OPTIMIZATION
-    if (tegra::thresh_32f(_src, _dst, roi.width, roi.height, thresh, maxval, type))
+    if (tegra::useTegra() && tegra::thresh_32f(_src, _dst, roi.width, roi.height, thresh, maxval, type))
         return;
 #endif
 
@@ -904,6 +904,24 @@ thresh_32f( const Mat& _src, Mat& _dst, float thresh, float maxval, int type )
     }
 }
 
+#ifdef HAVE_IPP
+static bool ipp_getThreshVal_Otsu_8u( const unsigned char* _src, int step, Size size, unsigned char &thresh)
+{
+#if IPP_VERSION_X100 >= 810 && !HAVE_ICV
+    int ippStatus = -1;
+    IppiSize srcSize = { size.width, size.height };
+    CV_SUPPRESS_DEPRECATED_START
+    ippStatus = ippiComputeThreshold_Otsu_8u_C1R(_src, step, srcSize, &thresh);
+    CV_SUPPRESS_DEPRECATED_END
+
+    if(ippStatus >= 0)
+        return true;
+#else
+    CV_UNUSED(_src); CV_UNUSED(step); CV_UNUSED(size); CV_UNUSED(thresh);
+#endif
+    return false;
+}
+#endif
 
 static double
 getThreshVal_Otsu_8u( const Mat& _src )
@@ -917,21 +935,9 @@ getThreshVal_Otsu_8u( const Mat& _src )
         step = size.width;
     }
 
-#if IPP_VERSION_X100 >= 801 && !defined(HAVE_IPP_ICV_ONLY)
-    CV_IPP_CHECK()
-    {
-        IppiSize srcSize = { size.width, size.height };
-        Ipp8u thresh;
-        CV_SUPPRESS_DEPRECATED_START
-        IppStatus ok = ippiComputeThreshold_Otsu_8u_C1R(_src.ptr(), step, srcSize, &thresh);
-        CV_SUPPRESS_DEPRECATED_END
-        if (ok >= 0)
-        {
-            CV_IMPL_ADD(CV_IMPL_IPP);
-            return thresh;
-        }
-        setIppErrorStatus();
-    }
+#ifdef HAVE_IPP
+    unsigned char thresh;
+    CV_IPP_RUN(IPP_VERSION_X100 >= 810 && !HAVE_ICV, ipp_getThreshVal_Otsu_8u(_src.ptr(), step, size, thresh), thresh);
 #endif
 
     const int N = 256;
@@ -984,6 +990,110 @@ getThreshVal_Otsu_8u( const Mat& _src )
     }
 
     return max_val;
+}
+
+static double
+getThreshVal_Triangle_8u( const Mat& _src )
+{
+    Size size = _src.size();
+    int step = (int) _src.step;
+    if( _src.isContinuous() )
+    {
+        size.width *= size.height;
+        size.height = 1;
+        step = size.width;
+    }
+
+    const int N = 256;
+    int i, j, h[N] = {0};
+    for( i = 0; i < size.height; i++ )
+    {
+        const uchar* src = _src.ptr() + step*i;
+        j = 0;
+        #if CV_ENABLE_UNROLLED
+        for( ; j <= size.width - 4; j += 4 )
+        {
+            int v0 = src[j], v1 = src[j+1];
+            h[v0]++; h[v1]++;
+            v0 = src[j+2]; v1 = src[j+3];
+            h[v0]++; h[v1]++;
+        }
+        #endif
+        for( ; j < size.width; j++ )
+            h[src[j]]++;
+    }
+
+    int left_bound = 0, right_bound = 0, max_ind = 0, max = 0;
+    int temp;
+    bool isflipped = false;
+
+    for( i = 0; i < N; i++ )
+    {
+        if( h[i] > 0 )
+        {
+            left_bound = i;
+            break;
+        }
+    }
+    if( left_bound > 0 )
+        left_bound--;
+
+    for( i = N-1; i > 0; i-- )
+    {
+        if( h[i] > 0 )
+        {
+            right_bound = i;
+            break;
+        }
+    }
+    if( right_bound < N-1 )
+        right_bound++;
+
+    for( i = 0; i < N; i++ )
+    {
+        if( h[i] > max)
+        {
+            max = h[i];
+            max_ind = i;
+        }
+    }
+
+    if( max_ind-left_bound < right_bound-max_ind)
+    {
+        isflipped = true;
+        i = 0, j = N-1;
+        while( i < j )
+        {
+            temp = h[i]; h[i] = h[j]; h[j] = temp;
+            i++; j--;
+        }
+        left_bound = N-1-right_bound;
+        max_ind = N-1-max_ind;
+    }
+
+    double thresh = left_bound;
+    double a, b, dist = 0, tempdist;
+
+    /*
+     * We do not need to compute precise distance here. Distance is maximized, so some constants can
+     * be omitted. This speeds up a computation a bit.
+     */
+    a = max; b = left_bound-max_ind;
+    for( i = left_bound+1; i <= max_ind; i++ )
+    {
+        tempdist = a*i + b*h[i];
+        if( tempdist > dist)
+        {
+            dist = tempdist;
+            thresh = i;
+        }
+    }
+    thresh--;
+
+    if( isflipped )
+        thresh = N-1-thresh;
+
+    return thresh;
 }
 
 class ThresholdRunner : public ParallelLoopBody
@@ -1070,7 +1180,7 @@ static bool ocl_threshold( InputArray _src, OutputArray _dst, double & thresh, d
            ocl::KernelArg::Constant(Mat(1, 1, depth, Scalar::all(maxval))),
            ocl::KernelArg::Constant(Mat(1, 1, depth, Scalar::all(min_val))));
 
-    size_t globalsize[2] = { dst.cols * cn / kercn, dst.rows };
+    size_t globalsize[2] = { (size_t)dst.cols * cn / kercn, (size_t)dst.rows };
     globalsize[1] = (globalsize[1] + stride_size - 1) / stride_size;
     return k.run(2, globalsize, NULL, false);
 }
@@ -1085,13 +1195,19 @@ double cv::threshold( InputArray _src, OutputArray _dst, double thresh, double m
                 ocl_threshold(_src, _dst, thresh, maxval, type), thresh)
 
     Mat src = _src.getMat();
-    bool use_otsu = (type & THRESH_OTSU) != 0;
+    int automatic_thresh = (type & ~CV_THRESH_MASK);
     type &= THRESH_MASK;
 
-    if( use_otsu )
+    CV_Assert( automatic_thresh != (CV_THRESH_OTSU | CV_THRESH_TRIANGLE) );
+    if( automatic_thresh == CV_THRESH_OTSU )
     {
         CV_Assert( src.type() == CV_8UC1 );
-        thresh = getThreshVal_Otsu_8u(src);
+        thresh = getThreshVal_Otsu_8u( src );
+    }
+    else if( automatic_thresh == CV_THRESH_TRIANGLE )
+    {
+        CV_Assert( src.type() == CV_8UC1 );
+        thresh = getThreshVal_Triangle_8u( src );
     }
 
     _dst.create( src.size(), src.type() );
@@ -1185,11 +1301,17 @@ void cv::adaptiveThreshold( InputArray _src, OutputArray _dst, double maxValue,
     if( src.data != dst.data )
         mean = dst;
 
-    if( method == ADAPTIVE_THRESH_MEAN_C )
+    if (method == ADAPTIVE_THRESH_MEAN_C)
         boxFilter( src, mean, src.type(), Size(blockSize, blockSize),
                    Point(-1,-1), true, BORDER_REPLICATE );
-    else if( method == ADAPTIVE_THRESH_GAUSSIAN_C )
-        GaussianBlur( src, mean, Size(blockSize, blockSize), 0, 0, BORDER_REPLICATE );
+    else if (method == ADAPTIVE_THRESH_GAUSSIAN_C)
+    {
+        Mat srcfloat,meanfloat;
+        src.convertTo(srcfloat,CV_32F);
+        meanfloat=srcfloat;
+        GaussianBlur(srcfloat, meanfloat, Size(blockSize, blockSize), 0, 0, BORDER_REPLICATE);
+        meanfloat.convertTo(mean, src.type());
+    }
     else
         CV_Error( CV_StsBadFlag, "Unknown/unsupported adaptive threshold method" );
 

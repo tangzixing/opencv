@@ -117,7 +117,7 @@ CV_IMPL void cvAddText(const CvArr* img, const char* text, CvPoint org, CvFont* 
         "putText",
         autoBlockingConnection(),
         Q_ARG(void*, (void*) img),
-        Q_ARG(QString,QString(text)),
+        Q_ARG(QString,QString::fromUtf8(text)),
         Q_ARG(QPoint, QPoint(org.x,org.y)),
         Q_ARG(void*,(void*) font));
 }
@@ -179,6 +179,18 @@ void cvSetPropWindow_QT(const char* name,double prop_value)
         autoBlockingConnection(),
         Q_ARG(QString, QString(name)),
         Q_ARG(double, prop_value));
+}
+
+void cv::setWindowTitle(const String& winname, const String& title)
+{
+    if (!guiMainThread)
+        CV_Error(Error::StsNullPtr, "NULL guiReceiver (please create a window)");
+
+    QMetaObject::invokeMethod(guiMainThread,
+        "setWindowTitle",
+        autoBlockingConnection(),
+        Q_ARG(QString, QString(winname.c_str())),
+        Q_ARG(QString, QString(title.c_str())));
 }
 
 
@@ -371,7 +383,7 @@ static CvWindow* icvFindWindowByName(QString name)
             if (temp->type == type_CvWindow)
             {
                 CvWindow* w = (CvWindow*) temp;
-                if (w->windowTitle() == name)
+                if (w->objectName() == name)
                 {
                     window = w;
                     break;
@@ -406,12 +418,14 @@ static CvBar* icvFindBarByName(QBoxLayout* layout, QString name_bar, typeBar typ
 static CvTrackbar* icvFindTrackBarByName(const char* name_trackbar, const char* name_window, QBoxLayout* layout = NULL)
 {
     QString nameQt(name_trackbar);
-    if ((!name_window || !name_window[0]) && global_control_panel) //window name is null and we have a control panel
+    QString nameWinQt(name_window);
+
+    if (nameWinQt.isEmpty() && global_control_panel) //window name is null and we have a control panel
         layout = global_control_panel->myLayout;
 
     if (!layout)
     {
-        QPointer<CvWindow> w = icvFindWindowByName(QLatin1String(name_window));
+        QPointer<CvWindow> w = icvFindWindowByName(nameWinQt);
 
         if (!w)
             CV_Error(CV_StsNullPtr, "NULL window handler");
@@ -452,6 +466,7 @@ static int icvInitSystem(int* c, char** v)
     if (!QApplication::instance())
     {
         new QApplication(*c, v);
+        setlocale(LC_NUMERIC,"C");
 
         qDebug() << "init done";
 
@@ -527,7 +542,7 @@ CV_IMPL const char* cvGetWindowName(void* window_handle)
     if( !window_handle )
         CV_Error( CV_StsNullPtr, "NULL window handler" );
 
-    return ((CvWindow*)window_handle)->windowTitle().toLatin1().data();
+    return ((CvWindow*)window_handle)->objectName().toLatin1().data();
 }
 
 
@@ -639,6 +654,36 @@ CV_IMPL void cvSetTrackbarPos(const char* name_bar, const char* window_name, int
 
     if (t)
         t->slider->setValue(pos);
+}
+
+
+CV_IMPL void cvSetTrackbarMax(const char* name_bar, const char* window_name, int maxval)
+{
+    if (maxval >= 0)
+    {
+        QPointer<CvTrackbar> t = icvFindTrackBarByName(name_bar, window_name);
+        if (t)
+        {
+            int minval = t->slider->minimum();
+            maxval = (maxval>minval)?maxval:minval;
+            t->slider->setMaximum(maxval);
+        }
+    }
+}
+
+
+CV_IMPL void cvSetTrackbarMin(const char* name_bar, const char* window_name, int minval)
+{
+    if (minval >= 0)
+    {
+        QPointer<CvTrackbar> t = icvFindTrackBarByName(name_bar, window_name);
+        if (t)
+        {
+            int maxval = t->slider->maximum();
+            minval = (maxval<minval)?maxval:minval;
+            t->slider->setMinimum(minval);
+        }
+    }
 }
 
 
@@ -869,6 +914,22 @@ void GuiReceiver::setPropWindow(QString name, double arg2)
     int flags = (int) arg2;
 
     w->setPropWindow(flags);
+}
+
+void GuiReceiver::setWindowTitle(QString name, QString title)
+{
+    QPointer<CvWindow> w = icvFindWindowByName(name);
+
+    if (!w)
+    {
+        cvNamedWindow(name.toLatin1().data());
+        w = icvFindWindowByName(name);
+    }
+
+    if (!w)
+        return;
+
+    w->setWindowTitle(title);
 }
 
 
@@ -1494,7 +1555,7 @@ void CvWinProperties::showEvent(QShowEvent* evnt)
     //no value pos was saved so we let Qt move the window in the middle of its parent (event ignored).
     //then hide will save the last position and thus, we want to retreive it (event accepted).
     QPoint mypos(-1, -1);
-    QSettings settings("OpenCV2", windowTitle());
+    QSettings settings("OpenCV2", objectName());
     mypos = settings.value("pos", mypos).toPoint();
 
     if (mypos.x() >= 0)
@@ -1511,7 +1572,7 @@ void CvWinProperties::showEvent(QShowEvent* evnt)
 
 void CvWinProperties::hideEvent(QHideEvent* evnt)
 {
-    QSettings settings("OpenCV2", windowTitle());
+    QSettings settings("OpenCV2", objectName());
     settings.setValue("pos", pos()); //there is an offset of 6 pixels (so the window's position is wrong -- why ?)
     evnt->accept();
 }
@@ -1520,7 +1581,7 @@ void CvWinProperties::hideEvent(QHideEvent* evnt)
 CvWinProperties::~CvWinProperties()
 {
     //clear the setting pos
-    QSettings settings("OpenCV2", windowTitle());
+    QSettings settings("OpenCV2", objectName());
     settings.remove("pos");
 }
 
@@ -1540,9 +1601,9 @@ CvWindow::CvWindow(QString name, int arg2)
     //setAttribute(Qt::WA_DeleteOnClose); //in other case, does not release memory
     setContentsMargins(0, 0, 0, 0);
     setWindowTitle(name);
-        setObjectName(name);
+    setObjectName(name);
 
-        setFocus( Qt::PopupFocusReason ); //#1695 arrow keys are not received without the explicit focus
+    setFocus( Qt::PopupFocusReason ); //#1695 arrow keys are not received without the explicit focus
 
     resize(400, 300);
     setMinimumSize(1, 1);
@@ -1702,7 +1763,6 @@ void CvWindow::setPropWindow(int flags)
     }
 }
 
-
 void CvWindow::toggleFullScreen(int flags)
 {
     if (isFullScreen() && flags == CV_WINDOW_NORMAL)
@@ -1834,7 +1894,7 @@ bool CvWindow::isOpenGl()
 
 void CvWindow::setViewportSize(QSize _size)
 {
-    myView->getWidget()->resize(_size);
+    resize(_size);
     myView->setSize(_size);
 }
 
@@ -2548,6 +2608,7 @@ void DefaultViewPort::resizeEvent(QResizeEvent* evnt)
         if (fabs(ratioX - ratioY) * 100 > ratioX) //avoid infinity loop / epsilon = 1% of ratioX
         {
             resize(newSize);
+            viewport()->resize(newSize);
 
             //move to the middle
             //newSize get the delta offset to place the picture in the middle of its parent
